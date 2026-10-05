@@ -8,6 +8,8 @@ async function mockBackend(page: Page) {
   const users: User[] = [
     { id: '1', name: 'Mama Ricci', email: 'a@jwt.com', password: 'admin', roles: [{ role: Role.Admin }] },
     { id: '4', name: 'Frank Franchisee', email: 'f@jwt.com', password: 'franchisee', roles: [{ role: Role.Franchisee, objectId: '2' }] },
+    { id: '3', name: 'Kai Chen', email: 'd@jwt.com', password: 'a', roles: [{ role: Role.Diner }] },
+    ...Array.from({ length: 10 }, (_, i) => ({ id: String(100 + i), name: `Diner ${i + 1}`, email: `diner${i + 1}@jwt.com`, password: 'a', roles: [{ role: Role.Diner }] })),
   ];
   const publicUser = (u: User) => ({ ...u, password: undefined });
 
@@ -40,7 +42,25 @@ async function mockBackend(page: Page) {
     await route.fulfill({ json: loggedInUser ? publicUser(loggedInUser) : null });
   });
 
+  // List users with the same paging/filter semantics as the service
+  await page.route(/\/api\/user(\?.*)?$/, async (route) => {
+    expect(route.request().method()).toBe('GET');
+    const params = new URL(route.request().url()).searchParams;
+    const page = Number(params.get('page') ?? 0);
+    const limit = Number(params.get('limit') ?? 10);
+    const nameFilter = new RegExp('^' + (params.get('name') ?? '*').split('*').map((s) => s.replace(/[.+?^${}()|[\]\\]/g, '\\$&')).join('.*') + '$', 'i');
+    const matching = users.filter((u) => nameFilter.test(u.name!));
+    const pageUsers = matching.slice(page * limit, page * limit + limit).map(publicUser);
+    await route.fulfill({ json: { users: pageUsers, more: matching.length > (page + 1) * limit } });
+  });
+
   await page.route(/\/api\/user\/\d+$/, async (route) => {
+    if (route.request().method() === 'DELETE') {
+      const id = route.request().url().split('/').pop();
+      users.splice(users.findIndex((u) => u.id === id), 1);
+      await route.fulfill({ json: { message: 'user deleted' } });
+      return;
+    }
     expect(route.request().method()).toBe('PUT');
     const req = route.request().postDataJSON();
     const user = users.find((u) => u.id === req.id)!;
@@ -48,6 +68,10 @@ async function mockBackend(page: Page) {
     user.email = req.email;
     if (req.password) user.password = req.password;
     await route.fulfill({ json: { user: publicUser(user), token: 'abcdef' } });
+  });
+
+  await page.route(/\/api\/franchise(\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { franchises: [], more: false } });
   });
 
   await page.route('*/**/api/order', async (route) => {
@@ -135,4 +159,44 @@ test('admin can update their name', async ({ page }) => {
   await editUser(page, { name: 'Mama Updated' });
   await expect(page.getByRole('main')).toContainText('Mama Updated');
   await expect(page.getByRole('main')).toContainText('admin');
+});
+
+test('admin can list, page, and filter users', async ({ page }) => {
+  await page.goto('/');
+  await login(page, 'a@jwt.com', 'admin');
+  await page.getByRole('link', { name: 'Admin' }).click();
+
+  const usersTable = page.getByRole('table', { name: 'Users' });
+  await expect(usersTable).toContainText('Mama Ricci');
+  await expect(usersTable).toContainText('a@jwt.com');
+  await expect(usersTable).toContainText('admin');
+  await expect(usersTable).toContainText('Kai Chen');
+  await expect(usersTable).not.toContainText('Diner 10');
+
+  await usersTable.getByRole('button', { name: '»' }).click();
+  await expect(usersTable).toContainText('Diner 10');
+  await expect(usersTable).not.toContainText('Kai Chen');
+  await expect(usersTable.getByRole('button', { name: '»' })).toBeDisabled();
+  await usersTable.getByRole('button', { name: '«' }).click();
+  await expect(usersTable).toContainText('Kai Chen');
+
+  await page.getByPlaceholder('Filter users').fill('kai');
+  await usersTable.getByRole('button', { name: 'Submit' }).click();
+  await expect(usersTable).toContainText('Kai Chen');
+  await expect(usersTable).not.toContainText('Mama Ricci');
+});
+
+test('admin can delete a user', async ({ page }) => {
+  await page.goto('/');
+  await login(page, 'a@jwt.com', 'admin');
+  await page.getByRole('link', { name: 'Admin' }).click();
+
+  const usersTable = page.getByRole('table', { name: 'Users' });
+  await usersTable.getByRole('row', { name: /Kai Chen/ }).getByRole('button', { name: 'Delete' }).click();
+  await expect(usersTable).not.toContainText('Kai Chen');
+  await expect(usersTable).toContainText('Mama Ricci');
+
+  await page.getByRole('link', { name: 'Logout' }).click();
+  await login(page, 'd@jwt.com', 'a');
+  await expect(page.getByRole('main')).toContainText('unknown user');
 });

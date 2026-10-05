@@ -42,6 +42,11 @@ async function basicInit(page: Page) {
     await route.fulfill({ json: loggedInUser });
   });
 
+  // Admin user list
+  await page.route(/\/api\/user(\?.*)?$/, async (route) => {
+    await route.fulfill({ json: { users: [], more: false } });
+  });
+
   // A standard menu
   await page.route('*/**/api/order/menu', async (route) => {
     const menuRes = [
@@ -208,7 +213,7 @@ test('admin can create and close a franchise', async ({ page }) => {
 
   await page.getByRole('link', { name: 'Admin' }).click();
   await expect(page.locator('h2')).toContainText("Mama Ricci's kitchen");
-  await expect(page.getByRole('table')).toContainText('LotaPizza');
+  await expect(page.getByRole('table', { name: 'Franchises' })).toContainText('LotaPizza');
 
   await page.getByRole('button', { name: 'Add Franchise' }).click();
   await expect(page.locator('h2')).toContainText('Create franchise');
