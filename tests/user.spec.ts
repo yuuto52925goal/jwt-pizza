@@ -123,6 +123,17 @@ test('updateUser', async ({ page }) => {
   await expect(page.getByRole('main')).toContainText('pizza dinerx');
 });
 
+test('edit dialog shows current values after reload', async ({ page }) => {
+  await register(page, 'd@jwt.com');
+  await page.getByRole('link', { name: 'pd' }).click();
+  await page.reload();
+  await expect(page.getByRole('main')).toContainText('pizza diner');
+
+  await page.getByRole('button', { name: 'Edit' }).click();
+  await expect(page.getByRole('textbox', { name: 'name' })).toHaveValue('pizza diner');
+  await expect(page.getByRole('textbox', { name: 'email' })).toHaveValue('d@jwt.com');
+});
+
 test('update email and password', async ({ page }) => {
   await register(page, 'd@jwt.com');
   await page.getByRole('link', { name: 'pd' }).click();
