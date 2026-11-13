@@ -82,6 +82,11 @@ jobs:
           aws cloudfront create-invalidation --distribution-id ${{ secrets.DISTRIBUTION_ID }} --paths "/*"
   synthetic:
     needs: deploy
+    permissions: # a called workflow can't get more than the caller grants
+      id-token: write
+      contents: write
+      issues: write
+      pull-requests: write
     uses: ./.github/workflows/synthetic.yaml
     secrets: inherit
   release:

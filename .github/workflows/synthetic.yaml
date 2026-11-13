@@ -6,6 +6,9 @@ on:
   workflow_dispatch:
   workflow_call: # lets ci.yaml run this right after a deploy
 
+env:
+  SITE_URL: https://pizza.deck-network.com
+
 jobs:
   synthetic:
     runs-on: ubuntu-latest
@@ -31,6 +34,163 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7.0.2
         with:
-          name: synthetic-report-${{ github.run_id }}
+          name: synthetic-report
           path: synthetic/report/
           retention-days: 7
+
+  # Step 1 of recovery: stop the bleeding. Automatic, because it is safe and reversible.
+  rollback:
+    needs: synthetic
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    outputs:
+      rolled_back: ${{ steps.decide.outputs.rolled_back }}
+      bad_version: ${{ steps.decide.outputs.deployed }}
+      good_tag: ${{ steps.decide.outputs.good_tag }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Decide whether the frontend changed since the last good release
+        id: decide
+        run: |
+          deployed=$(curl -sf "$SITE_URL/version.json" | jq -r .version || echo unknown)
+          # Releases are only created after synthetic passes, so the latest one is the last known-good build.
+          good_tag=$(gh release list -R "$GITHUB_REPOSITORY" -L 1 --json tagName -q '.[0].tagName')
+          echo "deployed=$deployed" >> "$GITHUB_OUTPUT"
+          echo "good_tag=$good_tag" >> "$GITHUB_OUTPUT"
+          if [ "version-$deployed" = "$good_tag" ]; then
+            # The frontend is already the known-good build: the failure is in the backend/infra.
+            # Rolling back would change nothing, so don't.
+            echo "rolled_back=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "rolled_back=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.decide.outputs.rolled_back == 'true'
+        with:
+          ref: ${{ steps.decide.outputs.good_tag }}
+
+      - uses: actions/setup-node@v4
+        if: steps.decide.outputs.rolled_back == 'true'
+        with:
+          node-version: '22.x'
+
+      - name: Rebuild last known-good version
+        if: steps.decide.outputs.rolled_back == 'true'
+        run: |
+          npm ci
+          version="${{ steps.decide.outputs.good_tag }}"
+          printf '{"version": "%s" }' "${version#version-}" > public/version.json
+          npm run build
+
+      - uses: aws-actions/configure-aws-credentials@v6.3.0
+        if: steps.decide.outputs.rolled_back == 'true'
+        with:
+          audience: sts.amazonaws.com
+          aws-region: us-east-1
+          role-to-assume: arn:aws:iam::${{ secrets.AWS_ACCOUNT }}:role/${{ secrets.CI_IAM_ROLE }}
+
+      - name: Deploy known-good version
+        if: steps.decide.outputs.rolled_back == 'true'
+        run: |
+          aws s3 cp dist s3://${{ secrets.APP_BUCKET }} --recursive
+          aws cloudfront create-invalidation --distribution-id ${{ secrets.DISTRIBUTION_ID }} --paths "/*"
+
+  # Step 2: tell a human. One open issue per incident, assigned so it never sits ownerless.
+  report:
+    needs: [synthetic, rollback]
+    if: always() && needs.synthetic.result == 'failure'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    outputs:
+      issue: ${{ steps.issue.outputs.number }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          name: synthetic-report
+
+      - name: Open or update incident issue
+        id: issue
+        run: |
+          failures=$(jq -r '.. | objects | select(.ok? == false and has("tests")) | "- `\(.title)`: \((.tests[0].results[-1].error.message // "") | gsub("\u001b\\[[0-9;]*m"; "") | split("\n")[0])"' results.json)
+          body=$(cat <<EOF
+          Synthetic tests failed against production.
+
+          **Failed checks**
+          $failures
+
+          | | |
+          |---|---|
+          | Deployed version | \`${{ needs.rollback.outputs.bad_version }}\` |
+          | Commit | ${{ github.sha }} |
+          | Auto-rollback to \`${{ needs.rollback.outputs.good_tag }}\` | ${{ needs.rollback.outputs.rolled_back == 'true' && '✅ done' || '⏭️ skipped (frontend unchanged → likely backend/infra)' }} |
+          | Run | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |
+          EOF
+          )
+          gh label create synthetic-failure -R "$GITHUB_REPOSITORY" -c B60205 2>/dev/null || true
+          existing=$(gh issue list -R "$GITHUB_REPOSITORY" -l synthetic-failure -s open -L 1 --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" -R "$GITHUB_REPOSITORY" -b "$body"
+            echo "number=$existing" >> "$GITHUB_OUTPUT"
+            echo "new=false" >> "$GITHUB_OUTPUT"
+          else
+            url=$(gh issue create -R "$GITHUB_REPOSITORY" -t "🔥 Synthetic failure: ${{ needs.rollback.outputs.bad_version }}" -b "$body" -l synthetic-failure -a "$GITHUB_REPOSITORY_OWNER")
+            echo "number=${url##*/}" >> "$GITHUB_OUTPUT"
+            echo "new=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # Step 3: let an agent propose a fix — a PR for a human to review, never a merge.
+  # Runs as a job here rather than an `issues: labeled` workflow because events created with
+  # GITHUB_TOKEN do not trigger other workflows.
+  autofix:
+    needs: [rollback, report]
+    if: >-
+      always() && vars.AUTOFIX_ENABLED == 'true'
+      && needs.rollback.outputs.rolled_back == 'true'
+      && needs.report.outputs.issue != ''
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+
+      - run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - uses: anthropics/claude-code-action@v1
+        with:
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_args: --max-turns 30
+          prompt: |
+            Production synthetic tests failed for commit ${{ github.sha }} and the frontend was
+            automatically rolled back to ${{ needs.rollback.outputs.good_tag }}.
+            Incident: issue #${{ needs.report.outputs.issue }} in ${{ github.repository }} (read it with `gh issue view`).
+
+            1. Find the cause: compare HEAD with ${{ needs.rollback.outputs.good_tag }} (`git diff`).
+            2. Reproduce against the REAL backend, not mocks:
+               `npm run build && (npx vite preview --port 4173 &) && sleep 3 &&
+                SITE_URL=http://localhost:4173 npx playwright test -c synthetic/playwright.config.ts`
+            3. If you find and verify a fix (synthetic AND `npx playwright test` both pass):
+               push branch `autofix/issue-${{ needs.report.outputs.issue }}` and open a PR that says
+               `Fixes #${{ needs.report.outputs.issue }}`, explains root cause + evidence, and requests
+               review from ${{ github.repository_owner }}.
+            4. If you are NOT confident, do not open a PR. Comment your findings on the issue instead.
+            Never merge, never push to main, never edit synthetic/ tests to make them pass.
