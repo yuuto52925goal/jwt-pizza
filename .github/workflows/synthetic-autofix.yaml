@@ -46,7 +46,11 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: github-actions # synthetic.yaml dispatches this run as the github-actions bot
-          claude_args: --max-turns 30
+          display_report: true # show what the agent did in the run's Step Summary
+          # Least privilege: only the commands the job needs. Pushes are limited to autofix/ branches.
+          claude_args: >-
+            --max-turns 30
+            --allowedTools "Read,Edit,Write,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin autofix/:*),Bash(git push origin autofix/:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(npm run build:*),Bash(npx playwright test:*),Bash(npx vite preview:*),Bash(sleep:*),Bash(curl -s http://localhost:4173:*)"
           prompt: |
             Production synthetic tests failed for commit ${{ inputs.bad_sha }} and the frontend was
             automatically rolled back to ${{ inputs.good_tag }}.
