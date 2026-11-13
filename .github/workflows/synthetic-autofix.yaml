@@ -1,0 +1,63 @@
+name: Synthetic Autofix
+
+# Started by synthetic.yaml after a rollback, or by hand from the Actions tab.
+on:
+  workflow_dispatch:
+    inputs:
+      issue:
+        description: Incident issue number
+        required: true
+      bad_sha:
+        description: Commit that failed synthetic tests
+        required: true
+      good_tag:
+        description: Last known-good release tag
+        required: true
+
+jobs:
+  autofix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.bad_sha }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+
+      - run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - uses: anthropics/claude-code-action@v1
+        env:
+          SYNTHETIC_EMAIL: ${{ secrets.SYNTHETIC_EMAIL }}
+          SYNTHETIC_PASSWORD: ${{ secrets.SYNTHETIC_PASSWORD }}
+        with:
+          # whichever one /install-github-app set up
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          claude_args: --max-turns 30
+          prompt: |
+            Production synthetic tests failed for commit ${{ inputs.bad_sha }} and the frontend was
+            automatically rolled back to ${{ inputs.good_tag }}.
+            Incident: issue #${{ inputs.issue }} in ${{ github.repository }} (read it with `gh issue view`).
+
+            1. Find the cause: `git diff ${{ inputs.good_tag }} ${{ inputs.bad_sha }}`.
+            2. Reproduce against the REAL backend, not mocks:
+               `npm run build && (npx vite preview --port 4173 &) && sleep 3 &&
+                SITE_URL=http://localhost:4173 npx playwright test -c synthetic/playwright.config.ts`
+            3. If you find and verify a fix (synthetic AND `npx playwright test` both pass):
+               create branch `autofix/issue-${{ inputs.issue }}` from main, push it, and open a PR that says
+               `Fixes #${{ inputs.issue }}`, explains root cause + evidence, and requests review from
+               ${{ github.repository_owner }}.
+            4. If you are NOT confident, do not open a PR. Comment your findings on the issue instead.
+            Never merge, never push to main, never edit synthetic/ tests to make them pass.

@@ -146,9 +146,9 @@ jobs:
             echo "new=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # Step 3: let an agent propose a fix — a PR for a human to review, never a merge.
-  # Runs as a job here rather than an `issues: labeled` workflow because events created with
-  # GITHUB_TOKEN do not trigger other workflows.
+  # Step 3: hand off to the agent (synthetic-autofix.yaml). It is a separate workflow started with
+  # workflow_dispatch because claude-code-action does not run on `push` events (this workflow is
+  # called from ci.yaml on push), and workflow_dispatch is the one event GITHUB_TOKEN may trigger.
   autofix:
     needs: [rollback, report]
     if: >-
@@ -156,43 +156,13 @@ jobs:
       && needs.rollback.outputs.rolled_back == 'true'
       && needs.report.outputs.issue != ''
     runs-on: ubuntu-latest
-    timeout-minutes: 20
     permissions:
-      contents: write
-      pull-requests: write
-      issues: write
-      id-token: write
+      actions: write
+    env:
+      GH_TOKEN: ${{ github.token }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - uses: actions/setup-node@v4
-        with:
-          node-version: '22.x'
-
-      - run: |
-          npm ci
-          npx playwright install --with-deps chromium
-
-      - uses: anthropics/claude-code-action@v1
-        with:
-          # whichever one /install-github-app set up
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
-          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
-          claude_args: --max-turns 30
-          prompt: |
-            Production synthetic tests failed for commit ${{ github.sha }} and the frontend was
-            automatically rolled back to ${{ needs.rollback.outputs.good_tag }}.
-            Incident: issue #${{ needs.report.outputs.issue }} in ${{ github.repository }} (read it with `gh issue view`).
-
-            1. Find the cause: compare HEAD with ${{ needs.rollback.outputs.good_tag }} (`git diff`).
-            2. Reproduce against the REAL backend, not mocks:
-               `npm run build && (npx vite preview --port 4173 &) && sleep 3 &&
-                SITE_URL=http://localhost:4173 npx playwright test -c synthetic/playwright.config.ts`
-            3. If you find and verify a fix (synthetic AND `npx playwright test` both pass):
-               push branch `autofix/issue-${{ needs.report.outputs.issue }}` and open a PR that says
-               `Fixes #${{ needs.report.outputs.issue }}`, explains root cause + evidence, and requests
-               review from ${{ github.repository_owner }}.
-            4. If you are NOT confident, do not open a PR. Comment your findings on the issue instead.
-            Never merge, never push to main, never edit synthetic/ tests to make them pass.
+      - run: >-
+          gh workflow run synthetic-autofix.yaml -R "$GITHUB_REPOSITORY" --ref "$GITHUB_REF_NAME"
+          -f issue=${{ needs.report.outputs.issue }}
+          -f bad_sha=${{ github.sha }}
+          -f good_tag=${{ needs.rollback.outputs.good_tag }}
