@@ -52,10 +52,10 @@ jobs:
           allowed_bots: github-actions # synthetic.yaml dispatches this run as the github-actions bot
           display_report: true # show what the agent did in the run's Step Summary
           show_full_output: ${{ inputs.debug }}
-          # Least privilege: only the commands the job needs. Pushes are limited to autofix/ branches.
+          # Least privilege: only the commands the job needs. The only push allowed is this incident's autofix branch.
           claude_args: >-
             --max-turns 30
-            --allowedTools "Read,Edit,Write,Grep,Glob,Bash(bash synthetic/run-local.sh),Bash(npx playwright test),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin autofix/:*),Bash(git push origin autofix/:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr create:*)"
+            --allowedTools "Read,Edit,Write,Grep,Glob,Bash(bash synthetic/run-local.sh),Bash(npx playwright test),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin autofix/issue-${{ inputs.issue }}),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr create:*)"
           prompt: |
             Production synthetic tests failed for commit ${{ inputs.bad_sha }} and the frontend was
             automatically rolled back to ${{ inputs.good_tag }}.
