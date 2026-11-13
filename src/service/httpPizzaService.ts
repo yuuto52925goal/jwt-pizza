@@ -85,7 +85,7 @@ class HttpPizzaService implements PizzaService {
   }
 
   async getMenu(): Promise<Menu> {
-    return this.callEndpoint('/api/v2/order/menu');
+    return this.callEndpoint('/api/order/menu');
   }
 
   async getOrders(user: User): Promise<OrderHistory> {
