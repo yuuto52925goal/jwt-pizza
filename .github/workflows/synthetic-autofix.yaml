@@ -45,6 +45,7 @@ jobs:
           # whichever one /install-github-app set up
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+          allowed_bots: github-actions # synthetic.yaml dispatches this run as the github-actions bot
           claude_args: --max-turns 30
           prompt: |
             Production synthetic tests failed for commit ${{ inputs.bad_sha }} and the frontend was
