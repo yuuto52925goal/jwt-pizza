@@ -31,8 +31,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.bad_sha }}
-          fetch-depth: 0
+          fetch-depth: 0 # main, so the fix branch sits on top of the latest code
 
       - uses: actions/setup-node@v4
         with:
@@ -56,19 +55,21 @@ jobs:
           # Least privilege: only the commands the job needs. Pushes are limited to autofix/ branches.
           claude_args: >-
             --max-turns 30
-            --allowedTools "Read,Edit,Write,Grep,Glob,Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin autofix/:*),Bash(git push origin autofix/:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr create:*),Bash(npm run build:*),Bash(npx playwright test:*),Bash(npx vite preview:*),Bash(sleep:*),Bash(curl -s http://localhost:4173:*)"
+            --allowedTools "Read,Edit,Write,Grep,Glob,Bash(bash synthetic/run-local.sh),Bash(npx playwright test),Bash(git diff:*),Bash(git log:*),Bash(git show:*),Bash(git status:*),Bash(git switch:*),Bash(git checkout:*),Bash(git add:*),Bash(git commit:*),Bash(git push -u origin autofix/:*),Bash(git push origin autofix/:*),Bash(gh issue view:*),Bash(gh issue comment:*),Bash(gh pr create:*)"
           prompt: |
             Production synthetic tests failed for commit ${{ inputs.bad_sha }} and the frontend was
             automatically rolled back to ${{ inputs.good_tag }}.
             Incident: issue #${{ inputs.issue }} in ${{ github.repository }} (read it with `gh issue view`).
 
-            1. Find the cause: `git diff ${{ inputs.good_tag }} ${{ inputs.bad_sha }}`.
-            2. Reproduce against the REAL backend, not mocks:
-               `npm run build && (npx vite preview --port 4173 &) && sleep 3 &&
-                SITE_URL=http://localhost:4173 npx playwright test -c synthetic/playwright.config.ts`
-            3. If you find and verify a fix (synthetic AND `npx playwright test` both pass):
-               create branch `autofix/issue-${{ inputs.issue }}` from main, push it, and open a PR that says
-               `Fixes #${{ inputs.issue }}`, explains root cause + evidence, and requests review from
-               ${{ github.repository_owner }}.
-            4. If you are NOT confident, do not open a PR. Comment your findings on the issue instead.
+            Rules for tools: run ONE command per Bash call (no &&, ;, pipes, or VAR=value prefixes),
+            and change files with the Edit tool, not sed.
+
+            1. Find the cause: `git diff ${{ inputs.good_tag }} ${{ inputs.bad_sha }} -- src tests`.
+            2. Reproduce against the REAL backend, not mocks: `bash synthetic/run-local.sh`.
+            3. Fix it on a new branch: `git switch -c autofix/issue-${{ inputs.issue }}`. Verify with
+               `bash synthetic/run-local.sh` AND `npx playwright test` (both must pass).
+            4. If verified: commit, `git push -u origin autofix/issue-${{ inputs.issue }}`, then `gh pr create`
+               with `--base main`, a body that says `Fixes #${{ inputs.issue }}` and explains root cause + evidence,
+               and `--reviewer ${{ github.repository_owner }}`.
+            5. If you are NOT confident, do not open a PR. Comment your findings on the issue instead.
             Never merge, never push to main, never edit synthetic/ tests to make them pass.
