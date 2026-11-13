@@ -13,6 +13,11 @@ on:
       good_tag:
         description: Last known-good release tag
         required: true
+      debug:
+        description: Print the full agent transcript to the log (secrets are masked)
+        type: boolean
+        default: false
+        required: true
 
 jobs:
   autofix:
@@ -47,6 +52,7 @@ jobs:
           claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
           allowed_bots: github-actions # synthetic.yaml dispatches this run as the github-actions bot
           display_report: true # show what the agent did in the run's Step Summary
+          show_full_output: ${{ inputs.debug }}
           # Least privilege: only the commands the job needs. Pushes are limited to autofix/ branches.
           claude_args: >-
             --max-turns 30
