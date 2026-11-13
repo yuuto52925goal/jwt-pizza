@@ -1,0 +1,36 @@
+name: Synthetic Tests
+
+on:
+  schedule:
+    - cron: '*/15 * * * *' # GitHub may delay scheduled runs by several minutes
+  workflow_dispatch:
+  workflow_call: # lets ci.yaml run this right after a deploy
+
+jobs:
+  synthetic:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22.x'
+
+      - name: Install
+        run: |
+          npm ci
+          npx playwright install --with-deps chromium
+
+      - name: Run synthetic tests against production
+        env:
+          SYNTHETIC_EMAIL: ${{ secrets.SYNTHETIC_EMAIL }}
+          SYNTHETIC_PASSWORD: ${{ secrets.SYNTHETIC_PASSWORD }}
+        run: npx playwright test -c synthetic/playwright.config.ts
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: synthetic-report-${{ github.run_id }}
+          path: synthetic/report/
+          retention-days: 7

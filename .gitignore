@@ -8,3 +8,5 @@ dist
 .nyc_output
 playwright-report
 test-results
+synthetic/report/
+synthetic/.env.local

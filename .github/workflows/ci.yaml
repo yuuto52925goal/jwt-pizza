@@ -80,10 +80,15 @@ jobs:
           echo Deploying $version
           aws s3 cp dist s3://${{ secrets.APP_BUCKET }} --recursive
           aws cloudfront create-invalidation --distribution-id ${{ secrets.DISTRIBUTION_ID }} --paths "/*"
+  synthetic:
+    needs: deploy
+    uses: ./.github/workflows/synthetic.yaml
+    secrets: inherit
   release:
     needs:
       - build
       - deploy
+      - synthetic
     permissions:
       contents: write # Required to create the tag and release
     runs-on: ubuntu-latest
